@@ -35,6 +35,9 @@ struct vringh {
 	/* Last available index we saw (ie. where we're up to). */
 	u16 last_avail_idx;
 
+	/* Caches available index value from user. */
+	u16 avail_idx;
+
 	/* Last index we used. */
 	u16 last_used_idx;
 
@@ -284,11 +287,17 @@ int vringh_init_iotlb(struct vringh *vrh, u64 features,
 		      struct vring_avail *avail,
 		      struct vring_used *used);
 
+bool vringh_avail_empty_iotlb(struct vringh *vrh);
+
 int vringh_getdesc_iotlb(struct vringh *vrh,
 			 struct vringh_kiov *riov,
 			 struct vringh_kiov *wiov,
 			 u16 *head,
 			 gfp_t gfp);
+
+int vringh_bvec_iotlb(struct vringh *vrh, struct vringh_kiov *kiov,
+		      struct bio_vec *bvec, size_t bvec_size, u32 perm,
+		      size_t count);
 
 ssize_t vringh_iov_pull_iotlb(struct vringh *vrh,
 			      struct vringh_kiov *riov,

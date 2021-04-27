@@ -33,6 +33,23 @@ config VDPA_SIM_BLOCK
 	  vDPA block device simulator which terminates IO request in a
 	  memory buffer.
 
+config VDPA_SW
+	tristate "vDPA software device core"
+	depends on HAS_DMA
+	select DMA_OPS
+	select VHOST_RING
+	select IOMMU_IOVA
+	help
+	  Enable this module to support vDPA software devices. These devices
+	  are used to accelerate virtio devices, emulating them in-kernel.
+
+config VDPA_SW_BLOCK
+	tristate "vDPA software device for virtio-blk"
+	depends on VDPA_SW
+	help
+	  vDPA software emulation for virtio-blk device to accelerate guest
+	  block requests.
+
 config VDPA_USER
 	tristate "VDUSE (vDPA Device in Userspace) support"
 	depends on EVENTFD && MMU && HAS_DMA

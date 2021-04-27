@@ -34,8 +34,30 @@ static __printf(1,2) __cold void vringh_bad(const char *fmt, ...)
 	}
 }
 
+static inline bool __vringh_avail_empty(struct vringh *vrh,
+					int (*getu16)(const struct vringh *vrh,
+						      u16 *val,
+						      const __virtio16 *p))
+{
+	u16 avail_idx;
+	int err;
+
+	if (vrh->avail_idx != vrh->last_avail_idx)
+		return false;
+
+	err = getu16(vrh, &avail_idx, &vrh->vring.avail->idx);
+	if (unlikely(err)) {
+		vringh_bad("Failed to access avail idx at %p",
+			   &vrh->vring.avail->idx);
+		return err;
+	}
+	vrh->avail_idx = avail_idx;
+
+	return avail_idx == vrh->last_avail_idx;
+}
+
 /* Returns vring->num if empty, -ve on error. */
-static inline int __vringh_get_head(const struct vringh *vrh,
+static inline int __vringh_get_head(struct vringh *vrh,
 				    int (*getu16)(const struct vringh *vrh,
 						  u16 *val, const __virtio16 *p),
 				    u16 *last_avail_idx)
@@ -43,29 +65,34 @@ static inline int __vringh_get_head(const struct vringh *vrh,
 	u16 avail_idx, i, head;
 	int err;
 
-	err = getu16(vrh, &avail_idx, &vrh->vring.avail->idx);
-	if (err) {
-		vringh_bad("Failed to access avail idx at %p",
-			   &vrh->vring.avail->idx);
-		return err;
+	if (vrh->avail_idx == *last_avail_idx) {
+		err = getu16(vrh, &avail_idx, &vrh->vring.avail->idx);
+		if (unlikely(err)) {
+			vringh_bad("Failed to access avail idx at %p",
+				   &vrh->vring.avail->idx);
+			return err;
+		}
+		vrh->avail_idx = avail_idx;
+
+		if (*last_avail_idx == avail_idx)
+			return vrh->vring.num;
+
+		/* Only get avail ring entries after they have been
+		 * exposed by guest.
+		 */
+		virtio_rmb(vrh->weak_barriers);
 	}
-
-	if (*last_avail_idx == avail_idx)
-		return vrh->vring.num;
-
-	/* Only get avail ring entries after they have been exposed by guest. */
-	virtio_rmb(vrh->weak_barriers);
 
 	i = *last_avail_idx & (vrh->vring.num - 1);
 
 	err = getu16(vrh, &head, &vrh->vring.avail->ring[i]);
-	if (err) {
+	if (unlikely(err)) {
 		vringh_bad("Failed to read head: idx %d address %p",
 			   *last_avail_idx, &vrh->vring.avail->ring[i]);
 		return err;
 	}
 
-	if (head >= vrh->vring.num) {
+	if (unlikely(head >= vrh->vring.num)) {
 		vringh_bad("Guest says index %u > %u is available",
 			   head, vrh->vring.num);
 		return -EINVAL;
@@ -118,7 +145,7 @@ static inline ssize_t vringh_iov_xfer(struct vringh *vrh,
 
 		partlen = min(iov->iov[iov->i].iov_len, len);
 		err = xfer(vrh, iov->iov[iov->i].iov_base, ptr, partlen);
-		if (err)
+		if (unlikely(err))
 			return err;
 		done += partlen;
 		len -= partlen;
@@ -135,7 +162,7 @@ static inline bool range_check(struct vringh *vrh, u64 addr, size_t *len,
 			       bool (*getrange)(struct vringh *,
 						u64, struct vringh_range *))
 {
-	if (addr < range->start || addr > range->end_incl) {
+	if (unlikely(addr < range->start || addr > range->end_incl)) {
 		if (!getrange(vrh, addr, range))
 			return false;
 	}
@@ -149,7 +176,7 @@ static inline bool range_check(struct vringh *vrh, u64 addr, size_t *len,
 	}
 
 	/* Otherwise, don't wrap. */
-	if (addr + *len < addr) {
+	if (unlikely(addr + *len < addr)) {
 		vringh_bad("Wrapping descriptor %zu@0x%llx",
 			   *len, (unsigned long long)addr);
 		return false;
@@ -181,7 +208,7 @@ static int move_to_indirect(const struct vringh *vrh,
 	u32 len;
 
 	/* Indirect tables can't have indirect. */
-	if (*up_next != -1) {
+	if (unlikely(*up_next != -1)) {
 		vringh_bad("Multilevel indirect %u->%u", *up_next, *i);
 		return -EINVAL;
 	}
@@ -225,7 +252,7 @@ static int resize_iovec(struct vringh_kiov *iov, gfp_t gfp)
 			flag = VRINGH_IOV_ALLOCATED;
 		}
 	}
-	if (!new)
+	if (unlikely(!new))
 		return -ENOMEM;
 	iov->iov = new;
 	iov->max_num = (new_num | flag);
@@ -372,7 +399,7 @@ __vringh_iov(struct vringh *vrh, u16 i,
 			}
 		}
 
-		if (!iov) {
+		if (unlikely(!iov)) {
 			vringh_bad("Unexpected %s desc",
 				   !wiov ? "writable" : "readable");
 			err = -EPROTO;
@@ -382,8 +409,9 @@ __vringh_iov(struct vringh *vrh, u16 i,
 	again:
 		/* Make sure it's OK, and get offset. */
 		len = vringh32_to_cpu(vrh, desc.len);
-		if (!rcheck(vrh, vringh64_to_cpu(vrh, desc.addr), &len, &range,
-			    getrange)) {
+		if (unlikely(!rcheck(vrh, vringh64_to_cpu(vrh, desc.addr),
+				     &len, &range,
+				     getrange))) {
 			err = -EINVAL;
 			goto fail;
 		}
@@ -421,7 +449,7 @@ __vringh_iov(struct vringh *vrh, u16 i,
 				break;
 		}
 
-		if (i >= desc_max) {
+		if (unlikely(i >= desc_max)) {
 			vringh_bad("Chained index %u > %u", i, desc_max);
 			err = -EINVAL;
 			goto fail;
@@ -463,7 +491,7 @@ static inline int __vringh_complete(struct vringh *vrh,
 	} else
 		err = putused(vrh, &used_ring->ring[off], used, num_used);
 
-	if (err) {
+	if (unlikely(err)) {
 		vringh_bad("Failed to write %u used entries %u at %p",
 			   num_used, off, &used_ring->ring[off]);
 		return err;
@@ -473,7 +501,7 @@ static inline int __vringh_complete(struct vringh *vrh,
 	virtio_wmb(vrh->weak_barriers);
 
 	err = putu16(vrh, &vrh->vring.used->idx, used_idx + num_used);
-	if (err) {
+	if (unlikely(err)) {
 		vringh_bad("Failed to update used index at %p",
 			   &vrh->vring.used->idx);
 		return err;
@@ -502,7 +530,7 @@ static inline int __vringh_need_notify(struct vringh *vrh,
 	if (!vrh->event_indices) {
 		u16 flags;
 		err = getu16(vrh, &flags, &vrh->vring.avail->flags);
-		if (err) {
+		if (unlikely(err)) {
 			vringh_bad("Failed to get flags at %p",
 				   &vrh->vring.avail->flags);
 			return err;
@@ -512,7 +540,7 @@ static inline int __vringh_need_notify(struct vringh *vrh,
 
 	/* Modern: we know when other side wants to know. */
 	err = getu16(vrh, &used_event, &vring_used_event(&vrh->vring));
-	if (err) {
+	if (unlikely(err)) {
 		vringh_bad("Failed to get used event idx at %p",
 			   &vring_used_event(&vrh->vring));
 		return err;
@@ -537,18 +565,21 @@ static inline bool __vringh_notify_enable(struct vringh *vrh,
 					  int (*putu16)(const struct vringh *vrh,
 							__virtio16 *p, u16 val))
 {
-	u16 avail;
+	u16 avail_idx;
+	int err;
 
 	if (!vrh->event_indices) {
 		/* Old-school; update flags. */
-		if (putu16(vrh, &vrh->vring.used->flags, 0) != 0) {
+		err = putu16(vrh, &vrh->vring.used->flags, 0);
+		if (unlikely(err)) {
 			vringh_bad("Clearing used flags %p",
 				   &vrh->vring.used->flags);
 			return true;
 		}
 	} else {
-		if (putu16(vrh, &vring_avail_event(&vrh->vring),
-			   vrh->last_avail_idx) != 0) {
+		err = putu16(vrh, &vring_avail_event(&vrh->vring),
+			     vrh->last_avail_idx);
+		if (unlikely(err)) {
 			vringh_bad("Updating avail event index %p",
 				   &vring_avail_event(&vrh->vring));
 			return true;
@@ -559,26 +590,30 @@ static inline bool __vringh_notify_enable(struct vringh *vrh,
 	 * sure it's written, then check again. */
 	virtio_mb(vrh->weak_barriers);
 
-	if (getu16(vrh, &avail, &vrh->vring.avail->idx) != 0) {
+	err = getu16(vrh, &avail_idx, &vrh->vring.avail->idx);
+	if (unlikely(err)) {
 		vringh_bad("Failed to check avail idx at %p",
 			   &vrh->vring.avail->idx);
 		return true;
 	}
+	vrh->avail_idx = avail_idx;
 
 	/* This is unlikely, so we just leave notifications enabled
 	 * (if we're using event_indices, we'll only get one
 	 * notification anyway). */
-	return avail == vrh->last_avail_idx;
+	return avail_idx == vrh->last_avail_idx;
 }
 
 static inline void __vringh_notify_disable(struct vringh *vrh,
 					   int (*putu16)(const struct vringh *vrh,
 							 __virtio16 *p, u16 val))
 {
+	int err;
 	if (!vrh->event_indices) {
 		/* Old-school; update flags. */
-		if (putu16(vrh, &vrh->vring.used->flags,
-			   VRING_USED_F_NO_NOTIFY)) {
+		err = putu16(vrh, &vrh->vring.used->flags,
+			     VRING_USED_F_NO_NOTIFY);
+		if (unlikely(err)) {
 			vringh_bad("Setting used flags %p",
 				   &vrh->vring.used->flags);
 		}
@@ -660,6 +695,7 @@ int vringh_init_user(struct vringh *vrh, u64 features,
 	vrh->weak_barriers = weak_barriers;
 	vrh->completed = 0;
 	vrh->last_avail_idx = 0;
+	vrh->avail_idx = 0;
 	vrh->last_used_idx = 0;
 	vrh->vring.num = num;
 	/* vring expects kernel addresses, but only used via accessors. */
@@ -934,6 +970,7 @@ int vringh_init_kern(struct vringh *vrh, u64 features,
 	vrh->weak_barriers = weak_barriers;
 	vrh->completed = 0;
 	vrh->last_avail_idx = 0;
+	vrh->avail_idx = 0;
 	vrh->last_used_idx = 0;
 	vrh->vring.num = num;
 	vrh->vring.desc = desc;
@@ -972,17 +1009,17 @@ int vringh_getdesc_kern(struct vringh *vrh,
 	int err;
 
 	err = __vringh_get_head(vrh, getu16_kern, &vrh->last_avail_idx);
-	if (err < 0)
+	if (unlikely(err < 0))
 		return err;
 
 	/* Empty... */
-	if (err == vrh->vring.num)
+	if (unlikely(err == vrh->vring.num))
 		return 0;
 
 	*head = err;
 	err = __vringh_iov(vrh, *head, riov, wiov, no_range_check, NULL,
 			   gfp, copydesc_kern);
-	if (err)
+	if (unlikely(err))
 		return err;
 
 	return 1;
@@ -1101,10 +1138,10 @@ static int iotlb_translate(const struct vringh *vrh,
 {
 	struct vhost_iotlb_map *map;
 	struct vhost_iotlb *iotlb = vrh->iotlb;
+	unsigned long flags;
 	int ret = 0;
 	u64 s = 0;
 
-	spin_lock(vrh->iotlb_lock);
 
 	while (len > s) {
 		u64 size, pa, pfn;
@@ -1114,12 +1151,15 @@ static int iotlb_translate(const struct vringh *vrh,
 			break;
 		}
 
+		spin_lock_irqsave(vrh->iotlb_lock, flags);
 		map = vhost_iotlb_itree_first(iotlb, addr,
 					      addr + len - 1);
-		if (!map || map->start > addr) {
+		spin_unlock_irqrestore(vrh->iotlb_lock, flags);
+
+		if (unlikely(!map || map->start > addr)) {
 			ret = -EINVAL;
 			break;
-		} else if (!(map->perm & perm)) {
+		} else if (unlikely(!(map->perm & perm))) {
 			ret = -EPERM;
 			break;
 		}
@@ -1134,8 +1174,6 @@ static int iotlb_translate(const struct vringh *vrh,
 		addr += size;
 		++ret;
 	}
-
-	spin_unlock(vrh->iotlb_lock);
 
 	if (translated)
 		*translated = min(len, s);
@@ -1153,6 +1191,11 @@ static inline int copy_from_iotlb(const struct vringh *vrh, void *dst,
 		struct iov_iter iter;
 		u64 translated;
 		int ret;
+
+		ret = iotlb_translate(vrh, (u64)(uintptr_t)src,
+				      len, iov, 16, VHOST_MAP_RO);
+		if (unlikely(ret < 0))
+		  return ret;
 
 		ret = iotlb_translate(vrh, (u64)(uintptr_t)src,
 				      len - total_translated, &translated,
@@ -1181,11 +1224,18 @@ static inline int copy_to_iotlb(const struct vringh *vrh, void *dst,
 {
 	u64 total_translated = 0;
 
+
 	while (total_translated < len) {
 		struct bio_vec iov[16];
 		struct iov_iter iter;
 		u64 translated;
 		int ret;
+
+		ret = iotlb_translate(vrh, (u64)(uintptr_t)dst,
+				      len, iov, 16, VHOST_MAP_WO);
+		if (unlikely(ret < 0))
+		  return ret;
+
 
 		ret = iotlb_translate(vrh, (u64)(uintptr_t)dst,
 				      len - total_translated, &translated,
@@ -1219,7 +1269,7 @@ static inline int getu16_iotlb(const struct vringh *vrh,
 	/* Atomic read is needed for getu16 */
 	ret = iotlb_translate(vrh, (u64)(uintptr_t)p, sizeof(*p), NULL,
 			      &iov, 1, VHOST_MAP_RO);
-	if (ret < 0)
+	if (unlikely(ret < 0))
 		return ret;
 
 	kaddr = kmap_atomic(iov.bv_page);
@@ -1240,7 +1290,7 @@ static inline int putu16_iotlb(const struct vringh *vrh,
 	/* Atomic write is needed for putu16 */
 	ret = iotlb_translate(vrh, (u64)(uintptr_t)p, sizeof(*p), NULL,
 			      &iov, 1, VHOST_MAP_WO);
-	if (ret < 0)
+	if (unlikely(ret < 0))
 		return ret;
 
 	kaddr = kmap_atomic(iov.bv_page);
@@ -1257,7 +1307,7 @@ static inline int copydesc_iotlb(const struct vringh *vrh,
 	int ret;
 
 	ret = copy_from_iotlb(vrh, dst, (void *)src, len);
-	if (ret != len)
+	if (unlikely(ret != len))
 		return -EFAULT;
 
 	return 0;
@@ -1269,7 +1319,7 @@ static inline int xfer_from_iotlb(const struct vringh *vrh, void *src,
 	int ret;
 
 	ret = copy_from_iotlb(vrh, dst, src, len);
-	if (ret != len)
+	if (unlikely(ret != len))
 		return -EFAULT;
 
 	return 0;
@@ -1281,7 +1331,7 @@ static inline int xfer_to_iotlb(const struct vringh *vrh,
 	int ret;
 
 	ret = copy_to_iotlb(vrh, dst, src, len);
-	if (ret != len)
+	if (unlikely(ret != len))
 		return -EFAULT;
 
 	return 0;
@@ -1296,7 +1346,7 @@ static inline int putused_iotlb(const struct vringh *vrh,
 	int ret;
 
 	ret = copy_to_iotlb(vrh, dst, (void *)src, num * sizeof(*dst));
-	if (ret != size)
+	if (unlikely(ret != size))
 		return -EFAULT;
 
 	return 0;
@@ -1340,6 +1390,15 @@ void vringh_set_iotlb(struct vringh *vrh, struct vhost_iotlb *iotlb,
 EXPORT_SYMBOL(vringh_set_iotlb);
 
 /**
+ * TODO
+ */
+bool vringh_avail_empty_iotlb(struct vringh *vrh)
+{
+	return __vringh_avail_empty(vrh, getu16_iotlb);
+}
+EXPORT_SYMBOL(vringh_avail_empty_iotlb);
+
+/**
  * vringh_getdesc_iotlb - get next available descriptor from ring with
  * IOTLB.
  * @vrh: the kernelspace vring.
@@ -1369,22 +1428,54 @@ int vringh_getdesc_iotlb(struct vringh *vrh,
 	int err;
 
 	err = __vringh_get_head(vrh, getu16_iotlb, &vrh->last_avail_idx);
-	if (err < 0)
+	if (unlikely(err < 0))
 		return err;
 
 	/* Empty... */
-	if (err == vrh->vring.num)
+	if (unlikely(err == vrh->vring.num))
 		return 0;
 
 	*head = err;
 	err = __vringh_iov(vrh, *head, riov, wiov, no_range_check, NULL,
 			   gfp, copydesc_iotlb);
-	if (err)
+	if (unlikely(err))
 		return err;
 
 	return 1;
 }
 EXPORT_SYMBOL(vringh_getdesc_iotlb);
+
+int vringh_bvec_iotlb(struct vringh *vrh, struct vringh_kiov *kiov,
+		      struct bio_vec *bvec, size_t bvec_size, u32 perm,
+		      size_t count)
+{
+	unsigned i, bvec_used = 0;
+	size_t total_len = 0;
+
+	for (i = kiov->i;
+	     i < kiov->used && bvec_used < bvec_size && total_len < count;
+	     i++) {
+		size_t partlen = min(kiov->iov[i].iov_len, count - total_len);
+		int ret;
+
+		ret = iotlb_translate(vrh, (u64)(uintptr_t)kiov->iov[i].iov_base,
+				      partlen, &bvec[bvec_used],
+				      bvec_size - bvec_used, perm);
+		if (unlikely(ret < 0))
+			return ret;
+
+		bvec_used += ret;
+		total_len += partlen;
+	}
+
+	if (unlikely(total_len < count))
+		return -ENOBUFS;
+
+	vringh_kiov_advance(kiov, total_len);
+
+	return bvec_used;
+}
+EXPORT_SYMBOL(vringh_bvec_iotlb);
 
 /**
  * vringh_iov_pull_iotlb - copy bytes from vring_iov.

@@ -478,6 +478,7 @@ static long vhost_vdpa_get_vqs_count(struct vhost_vdpa *v, u32 __user *argp)
 	return 0;
 }
 
+
 /* After a successful return of ioctl the device must not process more
  * virtqueue descriptors. The device can answer to read or writes of config
  * fields as if it were not suspended. In particular, writing to "queue_enable"
