@@ -253,7 +253,7 @@ struct vdpa_sw_dev *vdpa_sw_create(struct vdpa_sw_dev_attr *dev_attr)
 	else
 		ops = &vdpa_sw_config_ops;
 
-	sdev = vdpa_alloc_device(struct vdpa_sw_dev, vdpa, NULL, ops,
+	sdev = vdpa_alloc_device(struct vdpa_sw_dev, vdpa, NULL, ops, 1, 1,
 				    dev_attr->name, false);
 	if (IS_ERR(sdev)) {
 		ret = PTR_ERR(sdev);
@@ -404,14 +404,14 @@ static u32 vdpa_sw_get_vq_align(struct vdpa_device *vdpa)
 	return VDPA_SW_QUEUE_ALIGN;
 }
 
-static u64 vdpa_sw_get_features(struct vdpa_device *vdpa)
+static u64 vdpa_sw_get_driver_features(struct vdpa_device *vdpa)
 {
 	struct vdpa_sw_dev *sdev = vdpa_to_sw(vdpa);
 
 	return sdev->dev_attr.supported_features;
 }
 
-static int vdpa_sw_set_features(struct vdpa_device *vdpa, u64 features)
+static int vdpa_sw_set_driver_features(struct vdpa_device *vdpa, u64 features)
 {
 	struct vdpa_sw_dev *sdev = vdpa_to_sw(vdpa);
 
@@ -532,7 +532,7 @@ static struct vdpa_iova_range vdpa_sw_get_iova_range(struct vdpa_device *vdpa)
 	return range;
 }
 
-static int vdpa_sw_set_map(struct vdpa_device *vdpa,
+static int vdpa_sw_set_map(struct vdpa_device *vdpa, unsigned int asid,
 			   struct vhost_iotlb *iotlb)
 {
 	struct vdpa_sw_dev *sdev = vdpa_to_sw(vdpa);
@@ -560,7 +560,7 @@ err:
 	return ret;
 }
 
-static int vdpa_sw_dma_map(struct vdpa_device *vdpa, u64 iova, u64 size,
+static int vdpa_sw_dma_map(struct vdpa_device *vdpa, unsigned int asid, u64 iova, u64 size,
 			   u64 pa, u32 perm, void *opaque)
 {
 	struct vdpa_sw_dev *sdev = vdpa_to_sw(vdpa);
@@ -575,7 +575,7 @@ static int vdpa_sw_dma_map(struct vdpa_device *vdpa, u64 iova, u64 size,
 	return ret;
 }
 
-static int vdpa_sw_dma_unmap(struct vdpa_device *vdpa, u64 iova, u64 size)
+static int vdpa_sw_dma_unmap(struct vdpa_device *vdpa, unsigned int asid, u64 iova, u64 size)
 {
 	struct vdpa_sw_dev *sdev = vdpa_to_sw(vdpa);
 	unsigned long flags;
@@ -619,8 +619,8 @@ static const struct vdpa_config_ops vdpa_sw_config_ops = {
 	.set_vq_state           = vdpa_sw_set_vq_state,
 	.get_vq_state           = vdpa_sw_get_vq_state,
 	.get_vq_align           = vdpa_sw_get_vq_align,
-	.get_features           = vdpa_sw_get_features,
-	.set_features           = vdpa_sw_set_features,
+	.get_driver_features           = vdpa_sw_get_driver_features,
+	.set_driver_features           = vdpa_sw_set_driver_features,
 	.set_config_cb          = vdpa_sw_set_config_cb,
 	.get_vq_num_max         = vdpa_sw_get_vq_num_max,
 	.get_device_id          = vdpa_sw_get_device_id,
@@ -648,8 +648,8 @@ static const struct vdpa_config_ops vdpa_sw_batch_config_ops = {
 	.set_vq_state           = vdpa_sw_set_vq_state,
 	.get_vq_state           = vdpa_sw_get_vq_state,
 	.get_vq_align           = vdpa_sw_get_vq_align,
-	.get_features           = vdpa_sw_get_features,
-	.set_features           = vdpa_sw_set_features,
+	.get_driver_features           = vdpa_sw_get_driver_features,
+	.set_driver_features           = vdpa_sw_set_driver_features,
 	.set_config_cb          = vdpa_sw_set_config_cb,
 	.get_vq_num_max         = vdpa_sw_get_vq_num_max,
 	.get_device_id          = vdpa_sw_get_device_id,
