@@ -1193,7 +1193,7 @@ static inline int copy_from_iotlb(const struct vringh *vrh, void *dst,
 		int ret;
 
 		ret = iotlb_translate(vrh, (u64)(uintptr_t)src,
-				      len, iov, 16, VHOST_MAP_RO);
+				      len, &translated, iov, 16, VHOST_MAP_RO);
 		if (unlikely(ret < 0))
 		  return ret;
 
@@ -1232,7 +1232,7 @@ static inline int copy_to_iotlb(const struct vringh *vrh, void *dst,
 		int ret;
 
 		ret = iotlb_translate(vrh, (u64)(uintptr_t)dst,
-				      len, iov, 16, VHOST_MAP_WO);
+				      len, &translated, iov, 16, VHOST_MAP_WO);
 		if (unlikely(ret < 0))
 		  return ret;
 
@@ -1445,8 +1445,8 @@ int vringh_getdesc_iotlb(struct vringh *vrh,
 }
 EXPORT_SYMBOL(vringh_getdesc_iotlb);
 
-int vringh_bvec_iotlb(struct vringh *vrh, struct vringh_kiov *kiov,
-		      struct bio_vec *bvec, size_t bvec_size, u32 perm,
+int vringh_bvec_iotlb(struct vringh *vrh, struct vringh_kiov *kiov, 
+		      struct bio_vec *bvec, u64 *translated, size_t bvec_size, u32 perm,
 		      size_t count)
 {
 	unsigned i, bvec_used = 0;
@@ -1459,7 +1459,7 @@ int vringh_bvec_iotlb(struct vringh *vrh, struct vringh_kiov *kiov,
 		int ret;
 
 		ret = iotlb_translate(vrh, (u64)(uintptr_t)kiov->iov[i].iov_base,
-				      partlen, &bvec[bvec_used],
+				      partlen, translated, &bvec[bvec_used],
 				      bvec_size - bvec_used, perm);
 		if (unlikely(ret < 0))
 			return ret;

@@ -296,7 +296,7 @@ int vringh_getdesc_iotlb(struct vringh *vrh,
 			 gfp_t gfp);
 
 int vringh_bvec_iotlb(struct vringh *vrh, struct vringh_kiov *kiov,
-		      struct bio_vec *bvec, size_t bvec_size, u32 perm,
+		      struct bio_vec *bvec, u64 *translated, size_t bvec_size, u32 perm,
 		      size_t count);
 
 ssize_t vringh_iov_pull_iotlb(struct vringh *vrh,
