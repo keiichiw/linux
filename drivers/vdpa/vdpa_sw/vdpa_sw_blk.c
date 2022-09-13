@@ -60,6 +60,7 @@ static bool vdpa_sw_blk_check_range(struct vdpa_sw_dev *sdev,
 static int vdpa_sw_blk_req_prepare_status(struct vdpa_sw_blk_req *req)
 {
 	struct vdpa_sw_virtqueue *vq = req->vq;
+        u64 translated;
 	int ret;
 
 	/* status already prepared */
@@ -75,7 +76,7 @@ static int vdpa_sw_blk_req_prepare_status(struct vdpa_sw_blk_req *req)
 	}
 
 	/* get status address (last byte in in_iov) */
-	ret = vringh_bvec_iotlb(&vq->vring, &vq->in_iov, req->bio_status,
+	ret = vringh_bvec_iotlb(&vq->vring, &vq->in_iov, req->bio_status, &translated,
 				ARRAY_SIZE(req->bio_status), VHOST_MAP_WO, 1);
 	if (unlikely(ret < 0)) {
 		return ret;
@@ -180,7 +181,7 @@ static ssize_t vdpa_sw_blk_handle_req_io(struct vdpa_sw_blk_req *req,
 	struct vdpa_sw_dev *sdev = vq->sdev;
 	loff_t offset;
 	ssize_t bytes;
-	u64 sector;
+	u64 sector, translated;
 	int ret;
 
 	sector = vdpa_sw64_to_cpu(sdev, req->hdr.sector);
@@ -193,7 +194,7 @@ static ssize_t vdpa_sw_blk_handle_req_io(struct vdpa_sw_blk_req *req,
 		return -1;
 	}
 
-	ret = vringh_bvec_iotlb(&vq->vring, kiov, vq->bio, ARRAY_SIZE(vq->bio),
+	ret = vringh_bvec_iotlb(&vq->vring, kiov, vq->bio, &translated, ARRAY_SIZE(vq->bio),
 				perm, len);
 	if (unlikely(ret < 0)) {
 		dev_err(&sdev->vdpa.dev,
